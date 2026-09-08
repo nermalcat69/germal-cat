@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Germal Cat</title>
+<style>
+  :root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
+  body { margin: 0; background: #f6f6f7; color: #1a1a1a; }
+  @media (prefers-color-scheme: dark) { body { background: #16171a; color: #e8e8e8; } }
+  header { display: flex; gap: 1rem; align-items: center; padding: .8rem 1.2rem; border-bottom: 1px solid #8883; }
+  h1 { font-size: 1.05rem; margin: 0; }
+  main { padding: 1.2rem; max-width: 1100px; margin: 0 auto; }
+  button, input, select { font: inherit; padding: .45rem .6rem; border-radius: 6px; border: 1px solid #8886; background: #fff2; color: inherit; }
+  button { cursor: pointer; background: #3b82f6; color: #fff; border: 0; }
+  button.ghost { background: #8883; color: inherit; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #8882; font-variant-numeric: tabular-nums; }
+  tr { cursor: pointer; }
+  tr:hover td { background: #8881; }
+  .row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+  .muted { color: #8888; }
+  pre { background: #8881; padding: .8rem; border-radius: 6px; overflow: auto; max-height: 40vh; }
+  .status { font-size: 12px; }
+  .err { color: #ef4444; }
+  dialog { border: 0; border-radius: 10px; padding: 1.4rem; background: #fff; color: #111; }
+  @media (prefers-color-scheme: dark) { dialog { background: #23252a; color: #eee; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🐱 Germal Cat</h1>
+  <span class="status muted" id="status"></span>
+  <span style="flex:1"></span>
+  <button class="ghost" id="reset">Forgot password / wipe</button>
+</header>
+<main id="app">loading…</main>
+
+<dialog id="login">
+  <form method="dialog" id="loginForm">
+    <p id="loginTitle">Enter the dashboard password</p>
+    <p class="muted" style="max-width:32ch">First run sets the password. Lose it and old sessions are gone — you make a new one.</p>
+    <input type="password" id="pw" autofocus required style="width:100%" />
+    <p class="err" id="loginErr"></p>
+    <button>Unlock</button>
+  </form>
+</dialog>
+
+<script type="module">
+const $ = (s) => document.querySelector(s);
+const api = async (path, opts) => {
+  const r = await fetch("/api" + path, opts);
+  const t = await r.text();
+  const body = t ? JSON.parse(t) : null;
+  if (!r.ok) throw new Error(body?.error ?? r.statusText);
+  return body;
+};
+
+let resetMode = false;
+
+async function boot() {
+  const s = await api("/status");
+  $("#status").textContent = `daemon: ${s.initialized ? "initialized" : "new"} · ${s.unlocked ? "unlocked" : "locked"}`;
+  if (!s.unlocked) return showLogin(s.initialized ? "Enter the dashboard password" : "Set a dashboard password");
+  render();
+}
+
+function showLogin(title) {
+  $("#loginTitle").textContent = title;
+  $("#login").showModal();
+}
+
+$("#loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const path = resetMode ? "/reset" : "/unlock";
+    await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: $("#pw").value }) });
+    resetMode = false;
+    $("#login").close();
+    boot();
+  } catch (err) {
+    $("#loginErr").textContent = err.message;
+  }
+});
+
+$("#reset").addEventListener("click", () => {
+  if (!confirm("This deletes every recorded session permanently. Continue?")) return;
+  resetMode = true;
+  showLogin("Set a NEW password (old sessions are wiped)");
+});
+
+async function render() {
+  const sessions = await api("/sessions");
+  $("#app").innerHTML = `
+    <div class="row">
+      <input id="url" placeholder="https://example.com" style="flex:1;min-width:240px" />
+      <select id="browser">
+        <option>chrome</option><option>chromium</option><option>edge</option><option>brave</option><option>arc</option>
+      </select>
+      <button id="rec">Start recording</button>
+    </div>
+    <table><thead><tr><th>Session</th><th>Browser</th><th>Requests</th><th>Console</th><th>Started</th><th>URL</th></tr></thead>
+    <tbody>${sessions.map((s) => `
+      <tr data-id="${s.id}">
+        <td>${s.id}</td><td>${s.browser}</td><td>${s.request_count}</td><td>${s.console_count}</td>
+        <td>${new Date(s.started_at).toLocaleString()}</td>
+        <td class="muted">${s.url}</td>
+      </tr>`).join("")}</tbody></table>
+    <div id="detail"></div>`;
+
+  $("#rec").onclick = async () => {
+    try {
+      await api("/record", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: $("#url").value, browser: $("#browser").value }) });
+      setTimeout(render, 500);
+    } catch (e) { alert(e.message); }
+  };
+  document.querySelectorAll("tr[data-id]").forEach((tr) => tr.onclick = () => detail(tr.dataset.id));
+}
+
+async function detail(id) {
+  const [har, console_] = await Promise.all([
+    api(`/sessions/${id}/har`),
+    fetch(`/api/sessions/${id}/console`).then((r) => r.text()),
+  ]);
+  const entries = har.log.entries;
+  $("#detail").innerHTML = `
+    <h3>${id} — active recordings can be stopped below</h3>
+    <div class="row"><button id="stop" class="ghost">Stop this recording</button></div>
+    <h4>Network (${entries.length})</h4>
+    <table><thead><tr><th>Status</th><th>Method</th><th>Type</th><th>Size</th><th>URL</th></tr></thead>
+    <tbody>${entries.map((e) => `<tr><td>${e.response.status}</td><td>${e.request.method}</td>
+      <td>${e.response.content.mimeType || ""}</td><td>${e.response.bodySize}</td>
+      <td class="muted">${e.request.url}</td></tr>`).join("")}</tbody></table>
+    <h4>Console</h4>
+    <pre>${console_.split("\n").filter(Boolean).map((l) => {
+      const o = JSON.parse(l); return `[${o.type}] ${JSON.stringify(o.args)}`;
+    }).join("\n") || "(none)"}</pre>`;
+  $("#stop").onclick = async () => {
+    try { await api(`/sessions/${id}/stop`, { method: "POST" }); setTimeout(render, 500); }
+    catch (e) { alert(e.message); }
+  };
+}
+
+boot().catch((e) => { $("#app").innerHTML = `<p class="err">${e.message}</p>`; });
+</script>
+</body>
+</html>
