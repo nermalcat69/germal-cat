@@ -1,6 +1,7 @@
 //! Germal Cat — a local daemon that launches real browsers, records every
 //! network request and console message of a session, and stores it encrypted.
 
+mod agent;
 mod api;
 mod har;
 mod recorder;
@@ -34,6 +35,8 @@ enum Cmd {
         url: String,
         #[arg(long, default_value = "chrome")]
         browser: String,
+        #[arg(long, default_value = "default")]
+        project: String,
     },
     /// Stop a running recording by id.
     Stop { id: String },
@@ -92,8 +95,8 @@ async fn run_cli(cmd: Option<Cmd>) -> Result<()> {
             println!("vault reset");
             Ok(())
         }
-        Some(Cmd::Record { url, browser }) => {
-            let v = post("/api/record", serde_json::json!({ "url": url, "browser": browser })).await?;
+        Some(Cmd::Record { url, browser, project }) => {
+            let v = post("/api/record", serde_json::json!({ "url": url, "browser": browser, "project": project })).await?;
             println!("recording {} — stop with: germalcat stop {}", v["id"], v["id"]);
             Ok(())
         }
@@ -106,8 +109,9 @@ async fn run_cli(cmd: Option<Cmd>) -> Result<()> {
             let v = get("/api/sessions").await?;
             for s in v.as_array().map(Vec::as_slice).unwrap_or_default() {
                 println!(
-                    "{}  {:<7}  reqs {:<5} console {:<4}  {}",
+                    "{}  {:<12}  {:<7}  reqs {:<5} console {:<4}  {}",
                     s["id"].as_str().unwrap_or("?"),
+                    s["project"].as_str().unwrap_or("-"),
                     s["browser"].as_str().unwrap_or("?"),
                     s["request_count"], s["console_count"],
                     s["url"].as_str().unwrap_or("?"),

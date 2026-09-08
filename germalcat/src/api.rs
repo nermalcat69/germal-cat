@@ -1,3 +1,4 @@
+use crate::agent::{self, Settings};
 use crate::recorder;
 use crate::state::Daemon;
 use axum::extract::{Path, State};
@@ -22,6 +23,8 @@ pub fn router(daemon: Arc<Daemon>) -> Router {
         .route("/api/sessions/:id/har", get(har))
         .route("/api/sessions/:id/console", get(console))
         .route("/api/sessions/:id/stop", post(stop))
+        .route("/api/settings", get(get_settings).put(put_settings))
+        .route("/api/chat", post(chat))
         .layer(CorsLayer::permissive())
         .with_state(daemon)
 }
@@ -42,9 +45,16 @@ struct RecordReq {
     url: String,
     #[serde(default = "default_browser")]
     browser: String,
+    #[serde(default)]
+    project: String,
 }
 fn default_browser() -> String {
     "chrome".into()
+}
+
+#[derive(Deserialize)]
+struct ChatReq {
+    prompt: String,
 }
 
 async fn status(State(d): State<Arc<Daemon>>) -> Json<Value> {
@@ -76,7 +86,7 @@ async fn record(
     Json(req): Json<RecordReq>,
 ) -> Result<Json<SessionMeta>, ApiErr> {
     let store = d.store().map_err(|e| err(StatusCode::UNAUTHORIZED, e))?;
-    let meta = SessionMeta::new(&req.url, &req.browser);
+    let meta = SessionMeta::new(&req.project, &req.url, &req.browser);
     store.save_meta(&meta).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let daemon = d.clone();
@@ -128,4 +138,20 @@ async fn stop(
     } else {
         Err(err(StatusCode::NOT_FOUND, "no active recording with that id"))
     }
+}
+
+async fn get_settings() -> Json<Settings> {
+    Json(agent::load())
+}
+
+async fn put_settings(Json(s): Json<Settings>) -> Result<Json<Settings>, ApiErr> {
+    agent::save(&s).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(s))
+}
+
+async fn chat(Json(req): Json<ChatReq>) -> Result<Json<Value>, ApiErr> {
+    let reply = agent::chat(&req.prompt)
+        .await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(json!({ "reply": reply })))
 }

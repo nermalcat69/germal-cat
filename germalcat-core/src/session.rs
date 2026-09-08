@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 #[derive(Serialize, Deserialize, Clone)]
 pub struct SessionMeta {
     pub id: String,
+    pub project: String,
     pub url: String,
     pub browser: String,
     pub started_at: DateTime<Utc>,
@@ -18,10 +19,11 @@ pub struct SessionMeta {
 }
 
 impl SessionMeta {
-    pub fn new(url: &str, browser: &str) -> SessionMeta {
+    pub fn new(project: &str, url: &str, browser: &str) -> SessionMeta {
         let now = Utc::now();
         SessionMeta {
-            id: now.format("%Y%m%dT%H%M%SZ").to_string(),
+            id: now.format("%Y%m%dT%H%M%S%3fZ").to_string(),
+            project: if project.trim().is_empty() { "default".into() } else { project.trim().to_string() },
             url: url.to_string(),
             browser: browser.to_string(),
             started_at: now,

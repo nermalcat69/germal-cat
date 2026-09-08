@@ -6,31 +6,48 @@
 <title>Germal Cat</title>
 <style>
   :root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
-  body { margin: 0; background: #f6f6f7; color: #1a1a1a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f5f5f6; color: #1a1a1a; }
   @media (prefers-color-scheme: dark) { body { background: #16171a; color: #e8e8e8; } }
   header { display: flex; gap: 1rem; align-items: center; padding: .8rem 1.2rem; border-bottom: 1px solid #8883; }
+  header a { color: inherit; text-decoration: none; font-weight: 600; }
   h1 { font-size: 1.05rem; margin: 0; }
-  main { padding: 1.2rem; max-width: 1100px; margin: 0 auto; }
-  button, input, select { font: inherit; padding: .45rem .6rem; border-radius: 6px; border: 1px solid #8886; background: #fff2; color: inherit; }
+  main { padding: 1.4rem 1.2rem 4rem; max-width: 1000px; margin: 0 auto; }
+  button, input, select, textarea { font: inherit; padding: .5rem .65rem; border-radius: 7px; border: 1px solid #8886; background: #fff2; color: inherit; }
+  textarea { width: 100%; resize: vertical; }
   button { cursor: pointer; background: #3b82f6; color: #fff; border: 0; }
   button.ghost { background: #8883; color: inherit; }
+  button.big { font-size: 1.15rem; font-weight: 600; padding: .9rem 1.6rem; border-radius: 10px; }
+  .start-row { display: flex; gap: .8rem; align-items: stretch; margin-top: .8rem; }
+  .field { margin-bottom: .7rem; }
+  .field label { display: block; font-size: 12px; color: #8888; margin-bottom: .25rem; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #8882; font-variant-numeric: tabular-nums; }
-  tr { cursor: pointer; }
-  tr:hover td { background: #8881; }
-  .row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+  th, td { text-align: left; padding: .4rem .55rem; border-bottom: 1px solid #8882; font-variant-numeric: tabular-nums; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover td { background: #8881; }
+  .card { border: 1px solid #8883; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
   .muted { color: #8888; }
-  pre { background: #8881; padding: .8rem; border-radius: 6px; overflow: auto; max-height: 40vh; }
-  .status { font-size: 12px; }
+  .crumb { margin-bottom: 1rem; font-size: 13px; }
+  .crumb a { color: #3b82f6; text-decoration: none; }
+  .gap { height: 3rem; }
+  .status-ok { color: #22c55e; } .status-err { color: #ef4444; }
+  pre { background: #8881; padding: .7rem; border-radius: 7px; overflow: auto; max-height: 30vh; white-space: pre-wrap; word-break: break-all; }
   .err { color: #ef4444; }
-  dialog { border: 0; border-radius: 10px; padding: 1.4rem; background: #fff; color: #111; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: .2rem .8rem; }
+  .kv div:nth-child(odd) { color: #8888; }
+  .chat { margin-top: 1.2rem; }
+  .msg { padding: .5rem .7rem; border-radius: 8px; margin-bottom: .5rem; max-width: 85%; white-space: pre-wrap; }
+  .msg.user { background: #3b82f6; color: #fff; margin-left: auto; }
+  .msg.agent { background: #8882; }
+  dialog { border: 0; border-radius: 12px; padding: 1.4rem; background: #fff; color: #111; max-width: 90vw; }
   @media (prefers-color-scheme: dark) { dialog { background: #23252a; color: #eee; } }
 </style>
 </head>
 <body>
 <header>
-  <h1>🐱 Germal Cat</h1>
-  <span class="status muted" id="status"></span>
+  <a href="#/">🐱 Germal Cat</a>
+  <a href="#/settings" class="muted" style="font-weight:400">Settings</a>
+  <span class="status muted" id="status" style="font-size:12px"></span>
   <span style="flex:1"></span>
   <button class="ghost" id="reset">Forgot password / wipe</button>
 </header>
@@ -39,7 +56,7 @@
 <dialog id="login">
   <form method="dialog" id="loginForm">
     <p id="loginTitle">Enter the dashboard password</p>
-    <p class="muted" style="max-width:32ch">First run sets the password. Lose it and old sessions are gone — you make a new one.</p>
+    <p class="muted" style="max-width:34ch">First run sets the password. Lose it and old sessions are gone — you make a new one.</p>
     <input type="password" id="pw" autofocus required style="width:100%" />
     <p class="err" id="loginErr"></p>
     <button>Unlock</button>
@@ -48,101 +65,291 @@
 
 <script type="module">
 const $ = (s) => document.querySelector(s);
+const app = $("#app");
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
 const api = async (path, opts) => {
   const r = await fetch("/api" + path, opts);
   const t = await r.text();
-  const body = t ? JSON.parse(t) : null;
+  const body = t ? (() => { try { return JSON.parse(t); } catch { return t; } })() : null;
   if (!r.ok) throw new Error(body?.error ?? r.statusText);
   return body;
 };
+const jpost = (path, obj) => api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(obj) });
 
 let resetMode = false;
+let sessionsCache = [];
 
 async function boot() {
   const s = await api("/status");
-  $("#status").textContent = `daemon: ${s.initialized ? "initialized" : "new"} · ${s.unlocked ? "unlocked" : "locked"}`;
-  if (!s.unlocked) return showLogin(s.initialized ? "Enter the dashboard password" : "Set a dashboard password");
-  render();
+  $("#status").textContent = `${s.initialized ? "initialized" : "new"} · ${s.unlocked ? "unlocked" : "locked"}`;
+  if (!s.unlocked) { showLogin(s.initialized ? "Enter the dashboard password" : "Set a dashboard password"); return; }
+  route();
 }
-
-function showLogin(title) {
-  $("#loginTitle").textContent = title;
-  $("#login").showModal();
-}
+function showLogin(title) { $("#loginTitle").textContent = title; $("#login").showModal(); }
 
 $("#loginForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
-    const path = resetMode ? "/reset" : "/unlock";
-    await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: $("#pw").value }) });
-    resetMode = false;
-    $("#login").close();
-    boot();
-  } catch (err) {
-    $("#loginErr").textContent = err.message;
-  }
+    await jpost(resetMode ? "/reset" : "/unlock", { password: $("#pw").value });
+    resetMode = false; $("#login").close(); boot();
+  } catch (err) { $("#loginErr").textContent = err.message; }
 });
-
 $("#reset").addEventListener("click", () => {
   if (!confirm("This deletes every recorded session permanently. Continue?")) return;
-  resetMode = true;
-  showLogin("Set a NEW password (old sessions are wiped)");
+  resetMode = true; showLogin("Set a NEW password (old sessions are wiped)");
 });
 
-async function render() {
-  const sessions = await api("/sessions");
-  $("#app").innerHTML = `
-    <div class="row">
-      <input id="url" placeholder="https://example.com" style="flex:1;min-width:240px" />
-      <select id="browser">
-        <option>chrome</option><option>chromium</option><option>edge</option><option>brave</option><option>arc</option>
-      </select>
-      <button id="rec">Start recording</button>
-    </div>
-    <table><thead><tr><th>Session</th><th>Browser</th><th>Requests</th><th>Console</th><th>Started</th><th>URL</th></tr></thead>
-    <tbody>${sessions.map((s) => `
-      <tr data-id="${s.id}">
-        <td>${s.id}</td><td>${s.browser}</td><td>${s.request_count}</td><td>${s.console_count}</td>
-        <td>${new Date(s.started_at).toLocaleString()}</td>
-        <td class="muted">${s.url}</td>
-      </tr>`).join("")}</tbody></table>
-    <div id="detail"></div>`;
+window.addEventListener("hashchange", route);
 
-  $("#rec").onclick = async () => {
+async function route() {
+  const h = location.hash.slice(2).split("/"); // e.g. ["s","<id>","r","2"]
+  try {
+    if (h[0] === "settings") return viewSettings();
+    if (h[0] === "p") return viewProject(decodeURIComponent(h[1]));
+    if (h[0] === "s" && h[2] === "r") return viewRequest(h[1], Number(h[3]));
+    if (h[0] === "s") return viewSession(h[1]);
+    return viewHome();
+  } catch (e) {
+    app.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+  }
+}
+
+async function loadSessions() {
+  sessionsCache = await api("/sessions");
+  return sessionsCache;
+}
+
+function fmtDur(a, b) {
+  if (!a || !b) return "—";
+  const ms = new Date(b) - new Date(a);
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+// ---- home: new session + project list ----
+async function viewHome() {
+  const sessions = await loadSessions();
+  const projects = {};
+  for (const s of sessions) {
+    const p = projects[s.project] ??= { name: s.project, count: 0, last: null };
+    p.count++;
+    if (!p.last || s.started_at > p.last) p.last = s.started_at;
+  }
+  app.innerHTML = `
+    <div class="card">
+      <div class="field">
+        <label>Project name</label>
+        <textarea id="project" rows="1" placeholder="Acme checkout audit"></textarea>
+      </div>
+      <div class="field">
+        <label>URL to test</label>
+        <textarea id="url" rows="1" placeholder="https://example.com/checkout"></textarea>
+      </div>
+      <div class="start-row">
+        <button class="big" id="start">▶ Start session</button>
+        <select id="browser">
+          <option>chrome</option><option>chromium</option><option>edge</option><option>brave</option><option>arc</option>
+        </select>
+      </div>
+    </div>
+    <div class="gap"></div>
+    <h3>Projects</h3>
+    ${Object.values(projects).length ? "" : '<p class="muted">No projects yet — start a session above.</p>'}
+    <table><tbody>
+      ${Object.values(projects).sort((a,b)=>b.last.localeCompare(a.last)).map((p) => `
+        <tr data-p="${esc(p.name)}">
+          <td><strong>${esc(p.name)}</strong></td>
+          <td>${p.count} session${p.count === 1 ? "" : "s"}</td>
+          <td class="muted">last ${new Date(p.last).toLocaleString()}</td>
+        </tr>`).join("")}
+    </tbody></table>`;
+
+  $("#start").onclick = async () => {
+    const url = $("#url").value.trim();
+    if (!url) return alert("enter a URL");
     try {
-      await api("/record", { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: $("#url").value, browser: $("#browser").value }) });
-      setTimeout(render, 500);
+      const m = await jpost("/record", { project: $("#project").value.trim(), url, browser: $("#browser").value });
+      location.hash = "#/s/" + m.id;
     } catch (e) { alert(e.message); }
   };
-  document.querySelectorAll("tr[data-id]").forEach((tr) => tr.onclick = () => detail(tr.dataset.id));
+  app.querySelectorAll("tr[data-p]").forEach((tr) => tr.onclick = () => location.hash = "#/p/" + encodeURIComponent(tr.dataset.p));
 }
 
-async function detail(id) {
-  const [har, console_] = await Promise.all([
-    api(`/sessions/${id}/har`),
-    fetch(`/api/sessions/${id}/console`).then((r) => r.text()),
-  ]);
+// ---- project: its sessions ----
+async function viewProject(name) {
+  const sessions = (await loadSessions()).filter((s) => s.project === name);
+  app.innerHTML = `
+    <div class="crumb"><a href="#/">Projects</a> / ${esc(name)}</div>
+    <table>
+      <thead><tr><th>Session</th><th>Started</th><th>Duration</th><th>API requests</th><th>Console</th><th>URL</th></tr></thead>
+      <tbody>${sessions.map((s) => `
+        <tr data-id="${s.id}">
+          <td>${s.id}</td>
+          <td>${new Date(s.started_at).toLocaleString()}</td>
+          <td>${s.ended_at ? fmtDur(s.started_at, s.ended_at) : '<span class="status-ok">recording…</span>'}</td>
+          <td>${s.request_count}</td>
+          <td>${s.console_count}</td>
+          <td class="muted">${esc(s.url)}</td>
+        </tr>`).join("")}
+      </tbody></table>`;
+  app.querySelectorAll("tr[data-id]").forEach((tr) => tr.onclick = () => location.hash = "#/s/" + tr.dataset.id);
+}
+
+// ---- session: request rows ----
+async function viewSession(id) {
+  const [meta, har] = await Promise.all([api("/sessions/" + id), api("/sessions/" + id + "/har")]);
   const entries = har.log.entries;
-  $("#detail").innerHTML = `
-    <h3>${id} — active recordings can be stopped below</h3>
-    <div class="row"><button id="stop" class="ghost">Stop this recording</button></div>
-    <h4>Network (${entries.length})</h4>
-    <table><thead><tr><th>Status</th><th>Method</th><th>Type</th><th>Size</th><th>URL</th></tr></thead>
-    <tbody>${entries.map((e) => `<tr><td>${e.response.status}</td><td>${e.request.method}</td>
-      <td>${e.response.content.mimeType || ""}</td><td>${e.response.bodySize}</td>
-      <td class="muted">${e.request.url}</td></tr>`).join("")}</tbody></table>
-    <h4>Console</h4>
-    <pre>${console_.split("\n").filter(Boolean).map((l) => {
-      const o = JSON.parse(l); return `[${o.type}] ${JSON.stringify(o.args)}`;
-    }).join("\n") || "(none)"}</pre>`;
-  $("#stop").onclick = async () => {
-    try { await api(`/sessions/${id}/stop`, { method: "POST" }); setTimeout(render, 500); }
-    catch (e) { alert(e.message); }
+  const active = !meta.ended_at;
+  app.innerHTML = `
+    <div class="crumb"><a href="#/">Projects</a> / <a href="#/p/${encodeURIComponent(meta.project)}">${esc(meta.project)}</a> / ${id}</div>
+    <div class="card kv">
+      <div>URL</div><div>${esc(meta.url)}</div>
+      <div>Browser</div><div>${esc(meta.browser)}</div>
+      <div>Started</div><div>${new Date(meta.started_at).toLocaleString()}</div>
+      <div>Duration</div><div>${active ? "recording…" : fmtDur(meta.started_at, meta.ended_at)}</div>
+      <div>API requests</div><div>${entries.length}</div>
+    </div>
+    <div class="crumb">
+      ${active ? '<button id="stop" class="ghost">■ Stop recording</button> ' : ""}
+      <a href="/api/sessions/${id}/har" download="${esc(meta.project)}-${id}.har"><button class="ghost">⬇ Download requests (HAR)</button></a>
+      <a href="/api/sessions/${id}/console" download="${esc(meta.project)}-${id}.console.jsonl"><button class="ghost">⬇ Console</button></a>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>Method</th><th>Status</th><th>Type</th><th>Size</th><th>URL</th></tr></thead>
+      <tbody>${entries.map((e, i) => `
+        <tr data-i="${i}">
+          <td>${i + 1}</td>
+          <td>${esc(e.request.method)}</td>
+          <td class="${e.response.status >= 400 || e.response.status === 0 ? "status-err" : "status-ok"}">${e.response.status}</td>
+          <td>${esc((e.response.content.mimeType || "").split(";")[0])}</td>
+          <td>${e.response.bodySize}</td>
+          <td class="muted">${esc(e.request.url.slice(0, 90))}</td>
+        </tr>`).join("")}
+      </tbody></table>`;
+  if (active) $("#stop").onclick = async () => { try { await jpost(`/sessions/${id}/stop`, {}); setTimeout(route, 600); } catch (e) { alert(e.message); } };
+  app.querySelectorAll("tr[data-i]").forEach((tr) => tr.onclick = () => location.hash = `#/s/${id}/r/${tr.dataset.i}`);
+}
+
+// ---- request detail + chat ----
+const chatHistory = {}; // key: id/i -> [{role,text}]
+
+async function viewRequest(id, i) {
+  const [meta, har] = await Promise.all([api("/sessions/" + id), api("/sessions/" + id + "/har")]);
+  const e = har.log.entries[i];
+  if (!e) throw new Error("no such request");
+  const hdrs = (arr) => (arr || []).map((h) => `${esc(h.name)}: ${esc(h.value)}`).join("\n") || "(none)";
+  const key = id + "/" + i;
+  chatHistory[key] ??= [];
+
+  app.innerHTML = `
+    <div class="crumb">
+      <a href="#/">Projects</a> / <a href="#/p/${encodeURIComponent(meta.project)}">${esc(meta.project)}</a> /
+      <a href="#/s/${id}">${id}</a> / request ${i + 1}
+    </div>
+    <div class="card kv">
+      <div>Method</div><div>${esc(e.request.method)}</div>
+      <div>Status</div><div>${e.response.status} ${esc(e.response.statusText)}</div>
+      <div>URL</div><div>${esc(e.request.url)}</div>
+      <div>Type</div><div>${esc(e.response.content.mimeType || "—")}</div>
+      <div>Time</div><div>${e.time} ms</div>
+      <div>Response size</div><div>${e.response.bodySize} bytes</div>
+      ${e.response._error ? `<div>Error</div><div class="err">${esc(e.response._error)}</div>` : ""}
+    </div>
+    <div class="card">
+      <h4>Request headers</h4><pre>${hdrs(e.request.headers)}</pre>
+      ${e.request.postData ? `<h4>Request body</h4><pre>${esc(e.request.postData.text)}</pre>` : ""}
+      <h4>Response headers</h4><pre>${hdrs(e.response.headers)}</pre>
+      <h4>Response body</h4><pre>${esc((e.response.content.text || "(not captured)").slice(0, 20000))}</pre>
+    </div>
+
+    <div class="chat card">
+      <h4>Ask your coding agent about this request</h4>
+      <div id="thread"></div>
+      <form id="chatForm" style="display:flex;gap:.5rem;margin-top:.5rem">
+        <input id="chatInput" placeholder="e.g. why is this returning 401?" style="flex:1" />
+        <button>Send</button>
+      </form>
+      <p class="muted" id="chatHint" style="font-size:12px">Configure the agent in <a href="#/settings">Settings</a>.</p>
+    </div>`;
+
+  const thread = $("#thread");
+  const paint = () => {
+    thread.innerHTML = chatHistory[key].map((m) => `<div class="msg ${m.role}">${esc(m.text)}</div>`).join("");
+    thread.scrollTop = thread.scrollHeight;
+  };
+  paint();
+
+  $("#chatForm").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const q = $("#chatInput").value.trim();
+    if (!q) return;
+    $("#chatInput").value = "";
+    chatHistory[key].push({ role: "user", text: q });
+    paint();
+    const prompt = buildPrompt(meta, e, chatHistory[key]);
+    try {
+      $("#chatHint").textContent = "thinking…";
+      const r = await jpost("/chat", { prompt });
+      chatHistory[key].push({ role: "agent", text: r.reply || "(empty response)" });
+    } catch (err) {
+      chatHistory[key].push({ role: "agent", text: "⚠ " + err.message });
+    }
+    $("#chatHint").textContent = "";
+    paint();
   };
 }
 
-boot().catch((e) => { $("#app").innerHTML = `<p class="err">${e.message}</p>`; });
+function buildPrompt(meta, e, history) {
+  const ctx = [
+    `Project: ${meta.project}`,
+    `Session URL: ${meta.url}`,
+    ``,
+    `Captured request:`,
+    `${e.request.method} ${e.request.url}`,
+    `-> ${e.response.status} ${e.response.statusText}  (${e.response.content.mimeType || ""})`,
+    ``,
+    `Request headers:`,
+    (e.request.headers || []).map((h) => `  ${h.name}: ${h.value}`).join("\n"),
+    e.request.postData ? `\nRequest body:\n${e.request.postData.text}` : "",
+    `\nResponse body (truncated):\n${(e.response.content.text || "").slice(0, 4000)}`,
+  ].join("\n");
+  const convo = history.map((m) => `${m.role === "user" ? "Q" : "A"}: ${m.text}`).join("\n\n");
+  return `You are helping analyse a captured HTTP request.\n\n${ctx}\n\n--- conversation ---\n${convo}\n\nA:`;
+}
+
+// ---- settings ----
+async function viewSettings() {
+  const s = await api("/settings");
+  const defaults = { "claude-code": 'claude -p "$PROMPT"', opencode: 'opencode run "$PROMPT"', codex: 'codex exec "$PROMPT"', other: "" };
+  app.innerHTML = `
+    <div class="crumb"><a href="#/">Projects</a> / Settings</div>
+    <div class="card">
+      <h4>Coding agent</h4>
+      <p class="muted">The request chat shells out to this command. <code>$PROMPT</code> holds the message + request context.</p>
+      <div class="field">
+        <label>Agent</label>
+        <select id="agent">
+          ${["claude-code", "opencode", "codex", "other"].map((a) => `<option ${a === s.agent ? "selected" : ""}>${a}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field">
+        <label>Command</label>
+        <input id="command" value="${esc(s.command)}" style="width:100%" />
+      </div>
+      <button id="save">Save</button>
+      <span id="saved" class="muted" style="margin-left:.6rem"></span>
+    </div>`;
+  $("#agent").onchange = () => { if (defaults[$("#agent").value]) $("#command").value = defaults[$("#agent").value]; };
+  $("#save").onclick = async () => {
+    try {
+      await api("/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ agent: $("#agent").value, command: $("#command").value }) });
+      $("#saved").textContent = "saved";
+    } catch (e) { $("#saved").textContent = e.message; }
+  };
+}
+
+boot().catch((e) => { app.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 </script>
 </body>
 </html>
