@@ -28,7 +28,22 @@ impl Daemon {
             self.vault.init(password)?
         };
         *self.key.lock().unwrap() = Some(key);
+        self.reconcile_orphans();
         Ok(())
+    }
+
+    /// A recorder that was mid-session when the daemon last stopped left its
+    /// session with `ended_at == null` and no stopper registered. Close those so
+    /// the dashboard doesn't show a dead session as "recording…" forever.
+    fn reconcile_orphans(&self) {
+        let Ok(store) = self.store() else { return };
+        let active = self.active_ids();
+        for mut m in store.list() {
+            if m.ended_at.is_none() && !active.contains(&m.id) {
+                m.ended_at = Some(m.started_at);
+                let _ = store.save_meta(&m);
+            }
+        }
     }
 
     pub fn reset(&self, new_password: &str) -> Result<()> {

@@ -100,7 +100,9 @@ $("#reset").addEventListener("click", () => {
   resetMode = true; showLogin("Set a NEW password (old sessions are wiped)");
 });
 
-window.addEventListener("hashchange", route);
+let poll = null;
+function stopPoll() { if (poll) { clearInterval(poll); poll = null; } }
+window.addEventListener("hashchange", () => { stopPoll(); route(); });
 
 async function route() {
   const h = location.hash.slice(2).split("/"); // e.g. ["s","<id>","r","2"]
@@ -197,21 +199,29 @@ async function viewProject(name) {
 }
 
 // ---- session: request rows ----
+async function loadHar(id) {
+  try { return (await api("/sessions/" + id + "/har")).log.entries; }
+  catch { return []; }   // not flushed yet (recording just started)
+}
+
 async function viewSession(id) {
-  const [meta, har] = await Promise.all([api("/sessions/" + id), api("/sessions/" + id + "/har")]);
-  const entries = har.log.entries;
+  const [meta, entries] = await Promise.all([api("/sessions/" + id), loadHar(id)]);
   const active = !meta.ended_at;
   app.innerHTML = `
     <div class="crumb"><a href="#/">Projects</a> / <a href="#/p/${encodeURIComponent(meta.project)}">${esc(meta.project)}</a> / ${id}</div>
+    ${active ? `<div class="card" style="border-color:#22c55e">
+      <strong class="status-ok">● Recording</strong> — ${entries.length} requests captured so far. Use the browser window, then stop.
+      <div style="margin-top:.6rem"><button id="stop">■ Stop recording</button></div>
+    </div>` : ""}
     <div class="card kv">
       <div>URL</div><div>${esc(meta.url)}</div>
       <div>Browser</div><div>${esc(meta.browser)}</div>
       <div>Started</div><div>${new Date(meta.started_at).toLocaleString()}</div>
       <div>Duration</div><div>${active ? "recording…" : fmtDur(meta.started_at, meta.ended_at)}</div>
       <div>API requests</div><div>${entries.length}</div>
+      <div>Console lines</div><div>${meta.console_count}</div>
     </div>
     <div class="crumb">
-      ${active ? '<button id="stop" class="ghost">■ Stop recording</button> ' : ""}
       <a href="/api/sessions/${id}/har" download="${esc(meta.project)}-${id}.har"><button class="ghost">⬇ Download requests (HAR)</button></a>
       <a href="/api/sessions/${id}/console" download="${esc(meta.project)}-${id}.console.jsonl"><button class="ghost">⬇ Console</button></a>
     </div>
@@ -226,8 +236,19 @@ async function viewSession(id) {
           <td>${e.response.bodySize}</td>
           <td class="muted">${esc(e.request.url.slice(0, 90))}</td>
         </tr>`).join("")}
-      </tbody></table>`;
-  if (active) $("#stop").onclick = async () => { try { await jpost(`/sessions/${id}/stop`, {}); setTimeout(route, 600); } catch (e) { alert(e.message); } };
+      </tbody></table>
+    ${entries.length ? "" : '<p class="muted">No requests captured yet.</p>'}`;
+
+  if (active) {
+    $("#stop").onclick = async () => {
+      $("#stop").disabled = true; $("#stop").textContent = "stopping…";
+      // a 404 just means it already ended (e.g. daemon restarted) — still fine.
+      try { await jpost(`/sessions/${id}/stop`, {}); } catch (e) { if (!/no active recording/.test(e.message)) alert(e.message); }
+      stopPoll(); setTimeout(route, 800);
+    };
+    stopPoll();
+    poll = setInterval(() => { if (location.hash === `#/s/${id}`) viewSession(id).catch(() => {}); }, 2500);
+  }
   app.querySelectorAll("tr[data-i]").forEach((tr) => tr.onclick = () => location.hash = `#/s/${id}/r/${tr.dataset.i}`);
 }
 
@@ -235,9 +256,9 @@ async function viewSession(id) {
 const chatHistory = {}; // key: id/i -> [{role,text}]
 
 async function viewRequest(id, i) {
-  const [meta, har] = await Promise.all([api("/sessions/" + id), api("/sessions/" + id + "/har")]);
-  const e = har.log.entries[i];
-  if (!e) throw new Error("no such request");
+  const [meta, entries] = await Promise.all([api("/sessions/" + id), loadHar(id)]);
+  const e = entries[i];
+  if (!e) throw new Error("request not captured (yet) — go back to the session");
   const hdrs = (arr) => (arr || []).map((h) => `${esc(h.name)}: ${esc(h.value)}`).join("\n") || "(none)";
   const key = id + "/" + i;
   chatHistory[key] ??= [];

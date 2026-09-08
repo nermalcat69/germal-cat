@@ -147,13 +147,25 @@ pub async fn run(daemon: Arc<Daemon>, mut meta: SessionMeta) -> Result<SessionMe
     let (stop_tx, stop_rx) = oneshot::channel();
     daemon.register(meta.id.clone(), stop_tx);
 
+    // Flush a first snapshot so the dashboard has files to show immediately.
+    flush(&daemon, &mut meta, &har, &console, &url, false)?;
+
     page.goto(&url).await.context("navigate")?;
     tracing::info!(id = %meta.id, %url, "recording started");
 
-    // ponytail: stop signal only — a user closing the window by hand is caught
-    // on the next daemon shutdown, not instantly. Add a browser-closed watch if
-    // that matters.
-    let _ = stop_rx.await;
+    // Persist a fresh snapshot every 2s until stopped, so the session page
+    // shows live request counts and the Stop button always has a target.
+    // ponytail: full re-serialize each tick — switch to an append log if a
+    // single session ever holds tens of thousands of requests.
+    tokio::pin!(stop_rx);
+    let mut tick = tokio::time::interval(Duration::from_secs(2));
+    tick.tick().await;
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => break,
+            _ = tick.tick() => flush(&daemon, &mut meta, &har, &console, &url, false)?,
+        }
+    }
     daemon.finish(&meta.id);
 
     // Give in-flight body fetches a moment, then tear down listeners.
@@ -162,24 +174,42 @@ pub async fn run(daemon: Arc<Daemon>, mut meta: SessionMeta) -> Result<SessionMe
         t.abort();
     }
 
-    meta.ended_at = Some(Utc::now());
-    let har_json = har.lock().unwrap().to_json(&url, meta.started_at);
-    meta.request_count = har.lock().unwrap().len();
-    let console_lines = {
-        let c = console.lock().unwrap();
-        meta.console_count = c.len() as u64;
-        c.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n")
-    };
-
-    let store = daemon.store()?;
-    store.save_har(&meta.id, serde_json::to_vec_pretty(&har_json)?.as_slice())?;
-    store.save_console(&meta.id, console_lines.as_bytes())?;
-    store.save_meta(&meta)?;
-
+    flush(&daemon, &mut meta, &har, &console, &url, true)?;
     let _ = browser.close().await;
     pump.abort();
     tracing::info!(id = %meta.id, requests = meta.request_count, "recording saved");
     Ok(meta)
+}
+
+/// Serialize the current capture state and write meta + HAR + console to the
+/// vault. `final_` stamps `ended_at`.
+fn flush(
+    daemon: &Daemon,
+    meta: &mut SessionMeta,
+    har: &Mutex<HarBuilder>,
+    console: &Mutex<Vec<Value>>,
+    url: &str,
+    final_: bool,
+) -> Result<()> {
+    if final_ {
+        meta.ended_at = Some(Utc::now());
+    }
+    let (har_json, reqs) = {
+        let h = har.lock().unwrap();
+        (h.to_json(url, meta.started_at), h.len())
+    };
+    let lines = {
+        let c = console.lock().unwrap();
+        meta.console_count = c.len() as u64;
+        c.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n")
+    };
+    meta.request_count = reqs;
+
+    let store = daemon.store()?;
+    store.save_har(&meta.id, serde_json::to_vec_pretty(&har_json)?.as_slice())?;
+    store.save_console(&meta.id, lines.as_bytes())?;
+    store.save_meta(meta)?;
+    Ok(())
 }
 
 /// CDP `RequestId` -> plain string (it serializes transparently as one).
